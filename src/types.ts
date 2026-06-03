@@ -20,4 +20,6 @@ export interface AppState {
   accounts: Account[];
   history: HistoryEntry[];
   totalSavedThisMonth: number; // cumulative total saved for the accounts from "Calcular" operations
+  markedDays?: { [dateStr: string]: 'work' | 'off' };
+  currentCycleId?: string; // "YYYY-MM-20" representing the active billing cycle
 }

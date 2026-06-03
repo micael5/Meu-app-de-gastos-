@@ -1,18 +1,20 @@
 import React, { useState } from 'react';
 import { Account, HistoryEntry } from '../types';
-import { formatCurrency } from '../utils/storage';
+import { formatCurrency, getCurrentCycleDates, getOffDaysCountForCurrentCycle } from '../utils/storage';
 import { 
   ArrowLeft, Plus, Trash2, Calendar, Download, History, RotateCcw, 
-  Percent, DollarSign, Wallet, ClipboardList, AlertCircle, X, Check
+  Percent, DollarSign, Wallet, ClipboardList, AlertCircle, X, Check, Eye
 } from 'lucide-react';
 
 interface SettingsViewProps {
   accounts: Account[];
   history: HistoryEntry[];
   totalSavedThisMonth: number;
+  markedDays: { [dateStr: string]: 'work' | 'off' };
   deferredPrompt: any; // PWA installation event
   onGoBack: () => void;
   onUpdateAccounts: (accounts: Account[]) => void;
+  onUpdateMarkedDays: (markedDays: { [dateStr: string]: 'work' | 'off' }) => void;
   onResetSaved: () => void;
 }
 
@@ -20,9 +22,11 @@ export default function SettingsView({
   accounts,
   history,
   totalSavedThisMonth,
+  markedDays,
   deferredPrompt,
   onGoBack,
   onUpdateAccounts,
+  onUpdateMarkedDays,
   onResetSaved
 }: SettingsViewProps) {
   
@@ -34,22 +38,48 @@ export default function SettingsView({
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showInstallStatus, setShowInstallStatus] = useState<string | null>(null);
 
+  // States para controle de folgas e calendário
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(() => {
+    const today = new Date();
+    const y = today.getFullYear();
+    const m = String(today.getMonth() + 1).padStart(2, '0');
+    const d = String(today.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  });
+
+  const getPeriodText = () => {
+    const { start, end } = getCurrentCycleDates();
+    const months = [
+      'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+      'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+    ];
+    const formatDayMonth = (dateObj: Date) => {
+      const day = String(dateObj.getDate()).padStart(2, '0');
+      return `${day} de ${months[dateObj.getMonth()]}`;
+    };
+    return `${formatDayMonth(start)} até ${formatDayMonth(end)}`;
+  };
+
+  const formatLocalDate = (ymdStr: string) => {
+    const parts = ymdStr.split('-');
+    if (parts.length === 3) {
+      return `${parts[2]}/${parts[1]}/${parts[0]}`;
+    }
+    return ymdStr;
+  };
+
   // Calcular métricas gerais do orçamento
   const totalBudget = accounts.reduce((sum, acc) => sum + acc.value, 0);
   const totalSaved = totalSavedThisMonth;
   const remainingToSave = Math.max(0, totalBudget - totalSaved);
-  
-  // Dias restantes no mês corrente de 2026
-  const getRemainingDays = () => {
-    const today = new Date();
-    const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-    const diff = lastDayOfMonth.getDate() - today.getDate();
-    return Math.max(1, diff); // mínimo 1 dia para evitar divisões por zero
-  };
-  
-  const daysLeft = getRemainingDays();
-  const dailyGoal = daysLeft > 0 ? (remainingToSave / daysLeft) : remainingToSave;
   const progressPercent = totalBudget > 0 ? Math.min(100, (totalSaved / totalBudget) * 100) : 0;
+
+  // Cálculo da meta diária com folga (Nova regra definitiva 2026)
+  const { startStr, endStr } = getCurrentCycleDates();
+  const totalOffDays = getOffDaysCountForCurrentCycle(markedDays || {}, startStr, endStr);
+  const remainingWorkDays = Math.max(1, 30 - totalOffDays);
+  const settingsDailyMetaValue = totalBudget / remainingWorkDays;
 
   // Função auxiliar para re-calcular todas as porcentagens de forma proporcional e somar 100%
   const updateAndRecalculatePercentages = (updatedList: Account[]): Account[] => {
@@ -64,20 +94,61 @@ export default function SettingsView({
       return { ...acc, percentage };
     });
 
-    // Se houver pequenas variações de arredondamento, compensar no item de maior valor para somar exatamente 100%
+    // Se houver pequenas variações de arredondamento, compensar nos itens
+    // mantendo a regra de que valores de orçamento iguais possuem porcentagens exatamente iguais.
     const sumProportions = processed.reduce((sum, acc) => sum + acc.percentage, 0);
-    const diff = 100 - sumProportions;
-    if (Math.abs(diff) > 0.001 && processed.length > 0) {
-      // Encontrar o maior item e adicionar a diferença
-      let largestIdx = 0;
-      let maxVal = processed[0].value;
-      for (let i = 1; i < processed.length; i++) {
-        if (processed[i].value > maxVal) {
-          maxVal = processed[i].value;
-          largestIdx = i;
+    let diff = Math.round((100 - sumProportions) * 100); // em inteiros de centésimos (ex: +1 ou -1)
+    
+    if (diff !== 0 && processed.length > 0) {
+      // Agrupar índices das contas por seu valor de orçamento
+      const valueGroups: { [value: number]: number[] } = {};
+      processed.forEach((acc, idx) => {
+        if (!valueGroups[acc.value]) {
+          valueGroups[acc.value] = [];
+        }
+        valueGroups[acc.value].push(idx);
+      });
+
+      // Transformar em array de grupos
+      const groups = Object.entries(valueGroups).map(([val, idxs]) => ({
+        value: parseFloat(val),
+        idxs,
+        size: idxs.length
+      }));
+
+      // Loopping para ajustar os centésimos remanescentes da porcentagem
+      const sign = Math.sign(diff); // +1 ou -1
+      
+      while (diff !== 0) {
+        // Encontrar grupos elegíveis de menor tamanho cuja alteração caiba no diff ou,
+        // prioritariamente, grupos unitários (size == 1) para não quebrar a simetria.
+        // Se houver, escolhemos os grupos de menor tamanho.
+        const eligibleGroups = groups.filter(g => g.size <= Math.abs(diff));
+        
+        if (eligibleGroups.length > 0) {
+          // Ordenar preferencialmente por menor tamanho de grupo, e em seguida por tamanho de despesa (maior valor de orçamento primeiro)
+          eligibleGroups.sort((a, b) => {
+            if (a.size !== b.size) {
+              return a.size - b.size; // menor tamanho primeiro
+            }
+            return b.value - a.value; // maior orçamento primeiro
+          });
+
+          const groupToAdjust = eligibleGroups[0];
+          groupToAdjust.idxs.forEach(idx => {
+            processed[idx].percentage = Math.round((processed[idx].percentage + sign * 0.01) * 100) / 100;
+          });
+          diff -= sign * groupToAdjust.size;
+        } else {
+          // Caso extremo onde a diferença não cabe em nenhum grupo completo, ajustamos no maior grupo ou no primeiro item disponível
+          // para preservar a soma exata de 100% que é um requisito imperativo.
+          groups.sort((a, b) => b.value - a.value);
+          const groupToAdjust = groups[0];
+          const firstIdx = groupToAdjust.idxs[0];
+          processed[firstIdx].percentage = Math.round((processed[firstIdx].percentage + sign * 0.01) * 100) / 100;
+          diff -= sign;
         }
       }
-      processed[largestIdx].percentage = Math.round((processed[largestIdx].percentage + diff) * 100) / 100;
     }
 
     return processed;
@@ -243,17 +314,160 @@ export default function SettingsView({
               </span>
             </div>
             <div className="bg-[#F4F4F4] p-3 rounded-xl border border-transparent flex flex-col justify-between">
-              <span className="text-[#1A1A1A]/40 font-bold mb-1 uppercase tracking-wider text-[10px]">Dias Restantes</span>
+              <span className="text-[#1A1A1A]/40 font-bold mb-1 uppercase tracking-wider text-[10px]">Dias para trabalhar</span>
               <span className="font-display text-sm font-black text-[#FF4500] leading-tight">
-                {daysLeft} {daysLeft === 1 ? 'dia' : 'dias'}
+                {remainingWorkDays} {remainingWorkDays === 1 ? 'dia' : 'dias'}
               </span>
             </div>
             <div className="bg-[#F4F4F4] p-3 rounded-xl border border-transparent flex flex-col justify-between">
               <span className="text-[#1A1A1A]/40 font-bold mb-1 uppercase tracking-wider text-[10px]">Meta Diária</span>
               <span className="font-mono text-sm font-black text-[#FF4500] leading-tight">
-                {formatCurrency(dailyGoal)}
+                {formatCurrency(settingsDailyMetaValue)}
               </span>
             </div>
+          </div>
+        </section>
+
+        {/* SEÇÃO DO CALENDÁRIO DE TRABALHO E FOLGA */}
+        <section id="section-folgas" className="bg-white border border-[#E2E2E2] rounded-xl p-5 shadow-none">
+          <div className="flex items-center gap-2 mb-4 border-b border-[#F4F4F4] pb-2">
+            <Calendar size={16} className="text-[#FF4500]" />
+            <h2 className="text-xs font-black uppercase tracking-wider text-[#1A1A1A]">
+              MEUS DIAS DE TRABALHO E FOLGA
+            </h2>
+          </div>
+
+          <div className="mb-4">
+            <span className="block text-[10px] text-[#1A1A1A]/40 font-bold uppercase tracking-wider text-left">
+              PERÍODO DE TRABALHO ATUAL
+            </span>
+            <span className="block font-display text-xs font-black text-[#FF4500] uppercase mt-1">
+              Dia 21 até Dia 20 ({getPeriodText()})
+            </span>
+            <span className="block text-[10px] text-[#1A1A1A]/50 font-bold uppercase mt-1 text-left">
+              Folgas marcadas neste período: <strong className="text-red-600 font-black">{totalOffDays} {totalOffDays === 1 ? 'dia' : 'dias'}</strong>
+            </span>
+            {totalOffDays >= 30 && (
+              <span className="block text-[10px] text-red-600 font-black uppercase mt-1 bg-red-50 p-2 rounded-lg border border-red-100 text-left animate-fadeIn">
+                ⚠️ Defina pelo menos 1 dia para trabalhar!
+              </span>
+            )}
+          </div>
+
+          {/* Botão de Marcar Dia */}
+          {!showDatePicker ? (
+            <button
+              id="adicionar-dia-btn"
+              type="button"
+              onClick={() => setShowDatePicker(true)}
+              className="w-full flex items-center justify-center gap-2 py-3 bg-[#1A1A1A] hover:bg-[#FF4500] text-white font-display font-black text-xs rounded-xl active:scale-97 transition-all tracking-wider uppercase cursor-pointer"
+            >
+              <Plus size={14} className="stroke-[3px]" />
+              ADICIONAR / MARCAR DIA
+            </button>
+          ) : (
+            <div className="bg-[#F4F4F4] p-4 rounded-xl border border-[#E2E2E2]/60 mb-4 text-left">
+              <span className="block text-[10px] text-[#1A1A1A]/50 font-black uppercase tracking-wider mb-2">
+                Escolher qualquer dia:
+              </span>
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="w-full bg-white border border-[#E2E2E2] rounded-lg px-3 py-2 text-xs text-[#1A1A1A] font-mono font-bold focus:outline-none focus:border-[#FF4500] mb-3"
+              />
+              
+              <div className="grid grid-cols-2 gap-2.5 mb-3.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const updated = { ...markedDays, [selectedDate]: 'work' as const };
+                    onUpdateMarkedDays(updated);
+                    setShowDatePicker(false);
+                  }}
+                  className="py-3 bg-green-600 hover:bg-green-700 text-white font-display font-black text-[10px] rounded-lg cursor-pointer uppercase text-center transition-all tracking-wide shadow-none border border-transparent"
+                >
+                  ✅ TRABALHEI
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const updated = { ...markedDays, [selectedDate]: 'off' as const };
+                    onUpdateMarkedDays(updated);
+                    setShowDatePicker(false);
+                  }}
+                  className="py-3 bg-red-600 hover:bg-red-700 text-white font-display font-black text-[10px] rounded-lg cursor-pointer uppercase text-center transition-all tracking-wide shadow-none border border-transparent"
+                >
+                  ❌ DIA DE FOLGA
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowDatePicker(false)}
+                className="w-full text-center text-[10px] font-black text-[#1A1A1A]/50 hover:text-[#FF4500] uppercase tracking-wider bg-transparent p-1"
+              >
+                Cancelar
+              </button>
+            </div>
+          )}
+
+          {/* List of Marked Days in current cycle */}
+          <div className="mt-4 border-t border-[#F4F4F4] pt-4 text-left">
+            <span className="block text-[10px] text-[#1A1A1A]/40 font-bold uppercase tracking-wider mb-3.5">
+              DIAS MARCADOS NESTE PERÍODO
+            </span>
+            {Object.entries(markedDays).filter(([dateStr]) => {
+              const dates = getCurrentCycleDates();
+              return dateStr >= dates.startStr && dateStr <= dates.endStr;
+            }).length === 0 ? (
+              <span className="block text-[10px] font-bold text-[#1A1A1A]/30 text-center py-2 uppercase tracking-wide">
+                Nenhum dia de folga ou trabalho marcado
+              </span>
+            ) : (
+              <div className="flex flex-col gap-2 max-h-48 overflow-y-auto pr-1">
+                {Object.entries(markedDays)
+                  .filter(([dateStr]) => {
+                    const dates = getCurrentCycleDates();
+                    return dateStr >= dates.startStr && dateStr <= dates.endStr;
+                  })
+                  .sort(([dateA], [dateB]) => dateA.localeCompare(dateB))
+                  .map(([dateStr, status]) => {
+                    const isOff = status === 'off';
+                    return (
+                      <div 
+                        key={dateStr}
+                        className="flex items-center justify-between p-2.5 bg-[#F4F4F4] rounded-lg border border-[#E2E2E2]/40"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-mono font-bold text-[#1A1A1A]">
+                            {formatLocalDate(dateStr)}
+                          </span>
+                          <span className={`text-[9px] font-sans font-black uppercase px-2 py-0.5 rounded-md ${
+                            isOff 
+                              ? 'bg-red-100 text-red-600 border border-red-200' 
+                              : 'bg-green-100 text-green-700 border border-green-200'
+                          }`}>
+                            {isOff ? 'FOLGA' : 'TRABALHO'}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const updated = { ...markedDays };
+                            delete updated[dateStr];
+                            onUpdateMarkedDays(updated);
+                          }}
+                          className="text-[#1A1A1A]/40 hover:text-red-600 p-1 hover:bg-[#E2E2E2] rounded transition-all cursor-pointer"
+                          title="Remover marcação"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    );
+                  })}
+              </div>
+            )}
           </div>
         </section>
 

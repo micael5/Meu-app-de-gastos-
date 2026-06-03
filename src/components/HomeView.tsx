@@ -1,15 +1,16 @@
 import React, { useState } from 'react';
 import { Account, HistoryEntry } from '../types';
-import { calculateAllocations, formatCurrency } from '../utils/storage';
+import { calculateAllocations, formatCurrency, getCurrentCycleDates, getOffDaysCountForCurrentCycle } from '../utils/storage';
 import { Settings } from 'lucide-react';
 
 interface HomeViewProps {
   accounts: Account[];
+  markedDays: { [dateStr: string]: 'work' | 'off' };
   onCalculate: (gain: number, allocations: { name: string; value: number }[]) => void;
   onNavigateToSettings: () => void;
 }
 
-export default function HomeView({ accounts, onCalculate, onNavigateToSettings }: HomeViewProps) {
+export default function HomeView({ accounts, markedDays, onCalculate, onNavigateToSettings }: HomeViewProps) {
   const [inputValue, setInputValue] = useState<string>('');
   const [calculatedResult, setCalculatedResult] = useState<{
     gain: number;
@@ -56,6 +57,12 @@ export default function HomeView({ accounts, onCalculate, onNavigateToSettings }
   };
 
   const totalBudget = accounts.reduce((sum, acc) => sum + acc.value, 0);
+
+  // Cálculo de dias e meta com folgas (Regra de 30 dias - folgas)
+  const { startStr, endStr } = getCurrentCycleDates();
+  const totalOffDays = getOffDaysCountForCurrentCycle(markedDays || {}, startStr, endStr);
+  const remainingWorkDays = Math.max(1, 30 - totalOffDays);
+  const dailyMetaValue = totalBudget / remainingWorkDays;
 
   return (
     <div id="home-view-container" className="flex flex-col min-h-screen pb-24 px-5 pt-8 justify-between select-none bg-white text-[#1A1A1A]">
@@ -138,6 +145,31 @@ export default function HomeView({ accounts, onCalculate, onNavigateToSettings }
                 </span>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Container da Meta Diária (Adicionado conforme solicitação) */}
+        <div
+          id="meta-diaria-home-box"
+          className="w-full mt-6 bg-[#FFEFEA] border border-[#FF4500]/30 rounded-xl p-5 text-center transition-all shadow-none flex flex-col items-center justify-center animate-fadeIn"
+        >
+          <span 
+            id="meta-diaria-home-title" 
+            className="block text-sm font-black uppercase tracking-widest text-[#CC3B00] mb-2 font-display"
+          >
+            META DO DIA
+          </span>
+          <span 
+            id="meta-diaria-home-value" 
+            className="block font-display text-3xl font-black text-[#FF4500]"
+          >
+            {formatCurrency(dailyMetaValue)}
+          </span>
+        </div>
+
+        {totalOffDays >= 30 && (
+          <div className="w-full mt-3 bg-red-50 border border-red-200 text-red-600 rounded-xl p-3.5 text-center text-xs font-black uppercase tracking-wider animate-fadeIn">
+            ⚠️ Defina pelo menos 1 dia para trabalhar
           </div>
         )}
       </main>

@@ -1,0 +1,6 @@
+{
+  "name": "Meu Controle de Entregas",
+  "description": "Aplicativo de alta performance e uso offline para controle de despesas e ganhos diarios de entregadores.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

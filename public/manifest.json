@@ -1,0 +1,22 @@
+{
+  "name": "Meu Controle de Entregas",
+  "short_name": "Controle Entregas",
+  "description": "Aplicativo para controle de ganhos e despesas diárias de entregadores",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#18181b",
+  "theme_color": "#ea580c",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "https://img.icons8.com/color/192/delivery--v1.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "https://img.icons8.com/color/512/delivery--v1.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
